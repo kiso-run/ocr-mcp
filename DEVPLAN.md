@@ -404,3 +404,58 @@ The fix is a pluggable backend — Tesseract local default, Gemini opt-in for qu
 - Other local OCR engines (PaddleOCR, EasyOCR, EasyOCR with GPU). Tesseract is the broadest-coverage, most stable, lowest-overhead option for business documents. Add others only if a consumer demonstrates a specific quality gap on their workload.
 - Built-in PDF→image conversion. The docreader server already handles PDFs; if a PDF page needs OCR, the consumer pipelines docreader output to ocr-mcp (or pre-converts pages to PNG). Adding pdftoppm to ocr-mcp would duplicate concerns.
 - LayoutLM / table extraction / form parsing. These are document-AI tasks, not OCR; out of scope for this server.
+
+---
+
+## v0.3 — Cloud-only (2026-05-16)
+
+**Status**: planned.
+
+**Why this version exists**
+
+`kiso-ocr-mcp` is a thin, minimal MCP wrapper around a cloud vision LLM. The only backend choice is `openrouter` (direct OpenRouter calls) vs `litellm` (through the consumer's LiteLLM gateway for cost/PII/residency governance). Same pattern as `kiso-search-mcp` v0.2.
+
+Local-OCR engines are explicitly out of scope. Air-gapped consumers should fork the plugin and add a local backend themselves; the upstream stays a cloud-only wrapper. Mission: minimum surface, minimum maintenance, predictable cost.
+
+**Design shifts from v0.2**
+
+- **Tesseract removed entirely.** No backend selector value `tesseract`. No `pytesseract` (or equivalent) dependency. No `KISO_OCR_TESSERACT_LANGS` env. No apt-install instructions in README. No Tesseract tests.
+- **Backend selector reduced** from `tesseract|gemini` to `openrouter|litellm` — same env-var name `KISO_OCR_BACKEND`, new value space. Default `openrouter` (matches v0.1 and matches the kiso-search-mcp shape).
+- **Single code path internally**: both backends are HTTP POST to an OpenAI-compatible `/chat/completions` with a multimodal user message. The selector only switches the base URL (and the auth header). The runner stops branching on backend; one `_call_vision_llm(base_url, api_key, model, image_bytes, prompt)` function.
+- **Tools unchanged**: `ocr_image`, `describe_image`, `image_info`, `doctor`. Argument signatures stay backwards-compatible. Return shapes stay backwards-compatible.
+- **`describe_image` is no longer a special case.** In v0.2 it was "the only backend for describe_image" because Tesseract can't describe. With Tesseract gone, `describe_image` is just another vision-LLM prompt — same code path as `ocr_image`, different system prompt.
+- **`doctor` simplified**: drops Tesseract-binary check; checks only that the selected backend's env vars are set and that the endpoint responds to a 1-pixel test image.
+
+**Tasks** (TDD: tests first, then strip, then green)
+
+- [ ] Update `tests/test_ocr_runner.py`: drop all Tesseract-backend assertions; add tests for `KISO_OCR_BACKEND=litellm` route (mocked HTTP to `LITELLM_BASE_URL`); ensure `describe_image` and `ocr_image` go through the same `_call_vision_llm` path
+- [ ] Update `tests/test_server.py`: drop Tesseract-related tool-arg validation; verify `doctor` no longer probes for the Tesseract binary
+- [ ] Run pytest — confirm red (Tesseract tests gone, new litellm-backend tests not yet implemented)
+- [ ] Refactor `src/kiso_ocr_mcp/ocr_runner.py`: extract `_call_vision_llm(base_url, api_key, model, image_bytes, prompt)`; both `ocr_image` and `describe_image` call it with different prompts; backend selector resolves `(base_url, api_key, model)` from env once at startup
+- [ ] Strip Tesseract code from `ocr_runner.py` (any subprocess wrapper, the `KISO_OCR_TESSERACT_LANGS` handling, the language-pack apt-install assumptions)
+- [ ] Refactor `src/kiso_ocr_mcp/server.py`: drop the Tesseract `doctor` branch; simplify backend setup
+- [ ] Update `pyproject.toml`: remove Tesseract-related deps if any (`pytesseract`, etc.); bump `version = "0.3.0"`; update `description` to "Minimal MCP wrapper around a cloud vision LLM (OpenRouter direct, or via a consumer's LiteLLM gateway)"
+- [ ] `uv lock` — refresh `uv.lock`
+- [ ] Run pytest — confirm green
+- [ ] Rewrite `README.md` end-to-end: drop Tesseract sections, drop apt-install, drop `KISO_OCR_TESSERACT_LANGS`; explain the `openrouter` vs `litellm` selector (mirror the kiso-search-mcp README style)
+- [ ] Append note to `Out of scope for v0.3`: explicit "no local OCR path — by design"
+- [ ] Cut `v0.3.0` tag on GitHub *(user action)*
+
+**Exit gate**
+
+- `kiso-ocr-mcp` v0.3.0 ships with **zero local-compute fallback**: no Tesseract code, no Tesseract deps, no Tesseract docs, no Tesseract tests.
+- Both `openrouter` and `litellm` backends round-trip a real image successfully (live test).
+- `doctor` validates only the selected backend's reachability.
+- README explains the cloud-only stance and the migration from v0.2.
+- Cerase (downstream) can update `architecture.md` to reflect "kiso-ocr-mcp is cloud-only" without an asterisk.
+
+**Effort estimate**: 1–2 days. v0.3 is materially smaller than v0.2; most of the work is deletion, the new tests for the `litellm` route are a straight clone of the `openrouter` tests with a different base URL.
+
+---
+
+## Out of scope for v0.3
+
+- **Local OCR engines of any kind.** Tesseract, PaddleOCR, EasyOCR — out by design. If a consumer needs air-gapped OCR, they fork v0.2 or wire their own MCP server with a local backend; kiso-ocr-mcp's mission narrows to "minimal cloud vision wrapper".
+- **Provider auto-failover** between OpenRouter and direct provider routes. One backend at a time, set via env. If higher-availability routing is needed, the consumer's LiteLLM gateway already does this — that's exactly why the `litellm` backend exists.
+- **Model selection per tool call.** The model is set once at startup (env var). Per-call model overrides via tool arg are out of scope until a consumer asks.
+- **PDF / multi-page handling.** Still the docreader server's job; kiso-ocr-mcp operates on single image inputs.
