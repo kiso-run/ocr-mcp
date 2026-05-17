@@ -1,7 +1,7 @@
 [project]
 name = "kiso-ocr-mcp"
-version = "0.2.0"
-description = "Image OCR with pluggable backend (Tesseract local default, Gemini opt-in via OpenRouter), as a Model Context Protocol server"
+version = "0.3.0"
+description = "Minimal MCP wrapper around a cloud vision LLM (OpenRouter direct, or via a consumer's LiteLLM gateway)"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

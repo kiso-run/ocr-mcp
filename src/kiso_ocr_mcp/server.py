@@ -11,7 +11,10 @@ mcp = FastMCP("kiso-ocr")
 
 @mcp.tool()
 def ocr_image(file_path: str) -> dict:
-    """Extract text from an image via Gemini multimodal (OpenRouter).
+    """Extract text from an image via a cloud vision LLM.
+
+    Backend is selected by ``KISO_OCR_BACKEND``: ``openrouter`` (default)
+    or ``litellm``.
 
     Args:
         file_path: Path to the image file. Supported formats: png, jpg,
@@ -20,7 +23,7 @@ def ocr_image(file_path: str) -> dict:
     Returns:
         ``{"success": bool, "text": str, "has_text": bool, "format": str | None,
            "width": int | None, "height": int | None, "truncated": bool,
-           "stderr": str}``.
+           "backend": str, "stderr": str}``.
 
     ``has_text`` is ``false`` when the image contains no meaningful
     characters (blank photo, pure graphics, etc.). Output is truncated
@@ -31,7 +34,9 @@ def ocr_image(file_path: str) -> dict:
 
 @mcp.tool()
 def describe_image(file_path: str) -> dict:
-    """Describe an image's contents (subject, layout, colors, text) via Gemini.
+    """Describe an image's contents (subject, layout, colors, text) via a cloud vision LLM.
+
+    Same backend selection as ``ocr_image``.
 
     Args:
         file_path: Path to the image file.
@@ -39,7 +44,7 @@ def describe_image(file_path: str) -> dict:
     Returns:
         ``{"success": bool, "description": str, "format": str | None,
            "width": int | None, "height": int | None, "truncated": bool,
-           "stderr": str}``.
+           "backend": str, "stderr": str}``.
     """
     return ocr_runner.describe_image(file_path=file_path)
 
@@ -61,7 +66,7 @@ def image_info(file_path: str) -> dict:
 
 @mcp.tool()
 def doctor() -> dict:
-    """Check OpenRouter credentials. Returns ``{"healthy": bool, "issues": [str]}``."""
+    """Check backend reachability and credentials. Returns ``{"healthy": bool, "issues": [str], "backend": str}``."""
     return ocr_runner.check_health()
 
 

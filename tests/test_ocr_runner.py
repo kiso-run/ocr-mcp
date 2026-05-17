@@ -1,4 +1,4 @@
-"""Unit tests for kiso_ocr_mcp.ocr_runner."""
+"""Unit tests for kiso_ocr_mcp.ocr_runner — v0.3 cloud-only contract."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,16 +30,56 @@ def png_file(tmp_path: Path) -> Path:
     return f
 
 
-class TestOcrImage:
-    """OCR via the Gemini backend (opt-in). Set KISO_OCR_BACKEND=gemini
-    to force this path; the new default is tesseract (see TestOcrImageTesseract)."""
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    """Clean any kiso/openrouter/litellm env between tests."""
+    for var in (
+        "KISO_OCR_BACKEND",
+        "OPENROUTER_API_KEY",
+        "LITELLM_BASE_URL",
+        "LITELLM_API_KEY",
+        "KISO_OCR_MODEL",
+    ):
+        monkeypatch.delenv(var, raising=False)
 
-    @pytest.fixture(autouse=True)
-    def _force_gemini_backend(self, monkeypatch):
+
+class TestBackendSelection:
+    def test_default_backend_is_openrouter(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+        h = check_health()
+        assert h["backend"] == "openrouter"
+
+    def test_litellm_backend_selectable(self, monkeypatch):
+        monkeypatch.setenv("KISO_OCR_BACKEND", "litellm")
+        monkeypatch.setenv("LITELLM_BASE_URL", "http://lite:4000")
+        h = check_health()
+        assert h["backend"] == "litellm"
+
+    def test_unknown_backend_unhealthy(self, monkeypatch):
+        monkeypatch.setenv("KISO_OCR_BACKEND", "bogus")
+        h = check_health()
+        assert h["healthy"] is False
+        assert any("bogus" in i for i in h["issues"])
+
+    def test_tesseract_backend_no_longer_supported(self, monkeypatch, png_file):
+        """v0.3 removes the local Tesseract backend entirely."""
+        monkeypatch.setenv("KISO_OCR_BACKEND", "tesseract")
+        h = check_health()
+        assert h["healthy"] is False
+        assert any("tesseract" in i.lower() for i in h["issues"])
+
+    def test_gemini_alias_no_longer_supported(self, monkeypatch):
+        """v0.3 renames 'gemini' (old opt-in name) to 'openrouter'."""
         monkeypatch.setenv("KISO_OCR_BACKEND", "gemini")
+        h = check_health()
+        assert h["healthy"] is False
+        assert any("gemini" in i.lower() for i in h["issues"])
+
+
+class TestOcrImageOpenrouter:
+    """OCR via the default openrouter backend."""
 
     def test_missing_api_key_fails(self, monkeypatch, png_file):
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         result = ocr_image(file_path=str(png_file))
         assert result["success"] is False
         assert "OPENROUTER_API_KEY" in result["stderr"]
@@ -69,7 +109,7 @@ class TestOcrImage:
     def test_success_with_text(self, monkeypatch, png_file):
         monkeypatch.setenv("OPENROUTER_API_KEY", "k")
         with patch(
-            "kiso_ocr_mcp.ocr_runner._call_gemini",
+            "kiso_ocr_mcp.ocr_runner._call_vision_llm",
             return_value="Hello World",
         ):
             result = ocr_image(file_path=str(png_file))
@@ -80,12 +120,12 @@ class TestOcrImage:
         assert result["width"] == 64
         assert result["height"] == 48
         assert result["truncated"] is False
+        assert result["backend"] == "openrouter"
 
     def test_no_text_detected(self, monkeypatch, png_file):
         monkeypatch.setenv("OPENROUTER_API_KEY", "k")
-        # Gemini returned effectively nothing (no meaningful content).
         with patch(
-            "kiso_ocr_mcp.ocr_runner._call_gemini",
+            "kiso_ocr_mcp.ocr_runner._call_vision_llm",
             return_value="",
         ):
             result = ocr_image(file_path=str(png_file))
@@ -95,10 +135,9 @@ class TestOcrImage:
 
     def test_truncates_long_output(self, monkeypatch, png_file):
         monkeypatch.setenv("OPENROUTER_API_KEY", "k")
-        huge = "x" * 100_000
         with patch(
-            "kiso_ocr_mcp.ocr_runner._call_gemini",
-            return_value=huge,
+            "kiso_ocr_mcp.ocr_runner._call_vision_llm",
+            return_value="x" * 100_000,
         ):
             result = ocr_image(file_path=str(png_file))
         assert result["truncated"] is True
@@ -107,31 +146,100 @@ class TestOcrImage:
     def test_api_error_surfaces(self, monkeypatch, png_file):
         monkeypatch.setenv("OPENROUTER_API_KEY", "k")
         with patch(
-            "kiso_ocr_mcp.ocr_runner._call_gemini",
-            side_effect=RuntimeError("Gemini API error (500): boom"),
+            "kiso_ocr_mcp.ocr_runner._call_vision_llm",
+            side_effect=RuntimeError("vision API error (500): boom"),
         ):
             result = ocr_image(file_path=str(png_file))
         assert result["success"] is False
         assert "500" in result["stderr"]
 
 
-class TestDescribeImage:
-    """describe_image is Gemini-only — Tesseract is OCR not vision."""
+class TestOcrImageLitellm:
+    """OCR via the litellm backend — consumer's local LiteLLM gateway."""
 
     @pytest.fixture(autouse=True)
-    def _force_gemini_backend(self, monkeypatch):
-        monkeypatch.setenv("KISO_OCR_BACKEND", "gemini")
+    def _force_litellm(self, monkeypatch):
+        monkeypatch.setenv("KISO_OCR_BACKEND", "litellm")
+        monkeypatch.setenv("LITELLM_BASE_URL", "http://lite:4000")
 
-    def test_success_returns_description(self, monkeypatch, png_file):
+    def test_missing_base_url_fails(self, monkeypatch, png_file):
+        monkeypatch.delenv("LITELLM_BASE_URL", raising=False)
+        result = ocr_image(file_path=str(png_file))
+        assert result["success"] is False
+        assert "LITELLM_BASE_URL" in result["stderr"]
+
+    def test_success_uses_litellm_base_url(self, monkeypatch, png_file):
+        with patch(
+            "kiso_ocr_mcp.ocr_runner._call_vision_llm",
+            return_value="text from litellm",
+        ) as call:
+            result = ocr_image(file_path=str(png_file))
+        assert result["success"] is True
+        assert result["text"] == "text from litellm"
+        assert result["backend"] == "litellm"
+        kwargs = call.call_args.kwargs
+        assert kwargs["base_url"].startswith("http://lite:4000")
+
+    def test_litellm_api_key_optional(self, monkeypatch, png_file):
+        """LITELLM_API_KEY may be empty when gateway has no auth."""
+        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+        with patch(
+            "kiso_ocr_mcp.ocr_runner._call_vision_llm",
+            return_value="text",
+        ):
+            result = ocr_image(file_path=str(png_file))
+        assert result["success"] is True
+
+
+class TestDescribeImage:
+    """describe_image works on every backend (v0.3: same path as ocr_image)."""
+
+    def test_openrouter_success(self, monkeypatch, png_file):
         monkeypatch.setenv("OPENROUTER_API_KEY", "k")
         with patch(
-            "kiso_ocr_mcp.ocr_runner._call_gemini",
+            "kiso_ocr_mcp.ocr_runner._call_vision_llm",
             return_value="A cat on a red sofa.",
         ):
             result = describe_image(file_path=str(png_file))
         assert result["success"] is True
         assert result["description"].startswith("A cat")
         assert "text" not in result
+
+    def test_litellm_success(self, monkeypatch, png_file):
+        monkeypatch.setenv("KISO_OCR_BACKEND", "litellm")
+        monkeypatch.setenv("LITELLM_BASE_URL", "http://lite:4000")
+        with patch(
+            "kiso_ocr_mcp.ocr_runner._call_vision_llm",
+            return_value="A cat.",
+        ):
+            result = describe_image(file_path=str(png_file))
+        assert result["success"] is True
+        assert result["description"] == "A cat."
+
+
+class TestOcrAndDescribeShareCodePath:
+    """v0.3 contract: ocr_image and describe_image both call _call_vision_llm
+    with different prompts, never branch by backend."""
+
+    def test_ocr_uses_extract_prompt(self, monkeypatch, png_file):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+        with patch(
+            "kiso_ocr_mcp.ocr_runner._call_vision_llm",
+            return_value="x",
+        ) as call:
+            ocr_image(file_path=str(png_file))
+        prompt = call.call_args.kwargs.get("prompt") or call.call_args.args[-1]
+        assert "extract" in prompt.lower()
+
+    def test_describe_uses_describe_prompt(self, monkeypatch, png_file):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+        with patch(
+            "kiso_ocr_mcp.ocr_runner._call_vision_llm",
+            return_value="x",
+        ) as call:
+            describe_image(file_path=str(png_file))
+        prompt = call.call_args.kwargs.get("prompt") or call.call_args.args[-1]
+        assert "describe" in prompt.lower()
 
 
 class TestImageInfo:
@@ -147,8 +255,68 @@ class TestImageInfo:
         assert info["success"] is False
 
 
-class TestCallGeminiRetry:
-    def test_empty_then_empty_returns_empty(self, monkeypatch, png_file):
+class TestCallVisionLlm:
+    """Direct unit tests for the single _call_vision_llm function."""
+
+    def test_posts_to_base_url(self, png_file):
+        from kiso_ocr_mcp import ocr_runner
+
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "hello"}}]
+        }
+        with patch("httpx.post", return_value=mock_response) as post:
+            text = ocr_runner._call_vision_llm(
+                base_url="http://example/v1",
+                api_key="k",
+                model="vendor/model",
+                image_bytes=png_file.read_bytes(),
+                mime_type="image/png",
+                prompt="p",
+            )
+        assert text == "hello"
+        url = post.call_args.args[0]
+        assert url == "http://example/v1/chat/completions"
+
+    def test_authorization_header_when_key_set(self, png_file):
+        from kiso_ocr_mcp import ocr_runner
+
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "ok"}}]
+        }
+        with patch("httpx.post", return_value=mock_response) as post:
+            ocr_runner._call_vision_llm(
+                base_url="http://x/v1",
+                api_key="secret",
+                model="m",
+                image_bytes=png_file.read_bytes(),
+                mime_type="image/png",
+                prompt="p",
+            )
+        headers = post.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer secret"
+
+    def test_no_auth_header_when_key_empty(self, png_file):
+        from kiso_ocr_mcp import ocr_runner
+
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "ok"}}]
+        }
+        with patch("httpx.post", return_value=mock_response) as post:
+            ocr_runner._call_vision_llm(
+                base_url="http://x/v1",
+                api_key="",
+                model="m",
+                image_bytes=png_file.read_bytes(),
+                mime_type="image/png",
+                prompt="p",
+            )
+        headers = post.call_args.kwargs["headers"]
+        assert "Authorization" not in headers
+
+    def test_empty_then_empty_returns_empty(self, png_file):
         from kiso_ocr_mcp import ocr_runner
 
         mock_response = MagicMock(status_code=200)
@@ -157,11 +325,18 @@ class TestCallGeminiRetry:
         }
         with patch("httpx.post", return_value=mock_response) as post, \
              patch("kiso_ocr_mcp.ocr_runner.time.sleep"):
-            result = ocr_runner._call_gemini(png_file, "k", "p")
+            result = ocr_runner._call_vision_llm(
+                base_url="http://x/v1",
+                api_key="k",
+                model="m",
+                image_bytes=png_file.read_bytes(),
+                mime_type="image/png",
+                prompt="p",
+            )
         assert result == ""
         assert post.call_count == 3
 
-    def test_reasoning_fallback(self, monkeypatch, png_file):
+    def test_reasoning_fallback(self, png_file):
         from kiso_ocr_mcp import ocr_runner
 
         mock_response = MagicMock(status_code=200)
@@ -171,7 +346,14 @@ class TestCallGeminiRetry:
             }],
         }
         with patch("httpx.post", return_value=mock_response):
-            result = ocr_runner._call_gemini(png_file, "k", "p")
+            result = ocr_runner._call_vision_llm(
+                base_url="http://x/v1",
+                api_key="k",
+                model="m",
+                image_bytes=png_file.read_bytes(),
+                mime_type="image/png",
+                prompt="p",
+            )
         assert "fell back" in result
 
     def test_http_error_raises(self, png_file):
@@ -180,169 +362,45 @@ class TestCallGeminiRetry:
         mock_response = MagicMock(status_code=500, text="server boom")
         with patch("httpx.post", return_value=mock_response), \
              pytest.raises(RuntimeError, match="500"):
-            ocr_runner._call_gemini(png_file, "k", "p")
+            ocr_runner._call_vision_llm(
+                base_url="http://x/v1",
+                api_key="k",
+                model="m",
+                image_bytes=png_file.read_bytes(),
+                mime_type="image/png",
+                prompt="p",
+            )
 
 
 class TestCheckHealth:
-    def test_gemini_backend_healthy(self, monkeypatch):
-        monkeypatch.setenv("KISO_OCR_BACKEND", "gemini")
+    def test_openrouter_healthy(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "k")
         h = check_health()
         assert h["healthy"] is True
         assert h["issues"] == []
-        assert h["backend"] == "gemini"
+        assert h["backend"] == "openrouter"
 
-    def test_gemini_backend_missing_key(self, monkeypatch):
-        monkeypatch.setenv("KISO_OCR_BACKEND", "gemini")
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    def test_openrouter_missing_key_unhealthy(self, monkeypatch):
         h = check_health()
         assert h["healthy"] is False
         assert any("OPENROUTER_API_KEY" in i for i in h["issues"])
 
-    def test_default_backend_is_tesseract(self, monkeypatch):
-        """Privacy-first default: Tesseract local (no API key, no egress)."""
-        monkeypatch.delenv("KISO_OCR_BACKEND", raising=False)
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    def test_litellm_healthy(self, monkeypatch):
+        monkeypatch.setenv("KISO_OCR_BACKEND", "litellm")
+        monkeypatch.setenv("LITELLM_BASE_URL", "http://lite:4000")
         h = check_health()
-        assert h["backend"] == "tesseract"
+        assert h["healthy"] is True
+        assert h["backend"] == "litellm"
 
-    def test_tesseract_backend_reports_languages(self, monkeypatch):
-        monkeypatch.setenv("KISO_OCR_BACKEND", "tesseract")
-        with patch(
-            "kiso_ocr_mcp.ocr_runner._tesseract_installed_languages",
-            return_value=["eng", "ita", "osd"],
-        ):
-            h = check_health()
-        assert h["backend"] == "tesseract"
-        assert "tesseract_languages" in h
-        assert "ita" in h["tesseract_languages"]
-
-    def test_unknown_backend_unhealthy(self, monkeypatch):
-        monkeypatch.setenv("KISO_OCR_BACKEND", "bogus")
+    def test_litellm_missing_base_url_unhealthy(self, monkeypatch):
+        monkeypatch.setenv("KISO_OCR_BACKEND", "litellm")
         h = check_health()
         assert h["healthy"] is False
-        assert any("bogus" in i for i in h["issues"])
+        assert any("LITELLM_BASE_URL" in i for i in h["issues"])
 
-    def test_tesseract_missing_binary_unhealthy(self, monkeypatch):
-        monkeypatch.setenv("KISO_OCR_BACKEND", "tesseract")
-        with patch(
-            "kiso_ocr_mcp.ocr_runner._tesseract_installed_languages",
-            side_effect=FileNotFoundError("tesseract not installed"),
-        ):
-            h = check_health()
-        assert h["healthy"] is False
-        assert any("tesseract" in i.lower() for i in h["issues"])
-
-
-class TestOcrImageTesseract:
-    """OCR via the Tesseract local backend (new default in v0.2)."""
-
-    @pytest.fixture(autouse=True)
-    def _force_tesseract_backend(self, monkeypatch):
-        monkeypatch.setenv("KISO_OCR_BACKEND", "tesseract")
-
-    def test_no_api_key_required(self, monkeypatch, png_file):
-        """Tesseract runs locally — no OPENROUTER_API_KEY needed."""
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        with patch(
-            "kiso_ocr_mcp.ocr_runner._ocr_tesseract",
-            return_value="Hello from Tesseract",
-        ):
-            result = ocr_image(file_path=str(png_file))
-        assert result["success"] is True
-        assert result["text"] == "Hello from Tesseract"
-
-    def test_uses_default_languages(self, monkeypatch, png_file):
-        monkeypatch.delenv("KISO_OCR_TESSERACT_LANGS", raising=False)
-        with patch(
-            "kiso_ocr_mcp.ocr_runner._ocr_tesseract",
-            return_value="text",
-        ) as run:
-            ocr_image(file_path=str(png_file))
-        # Default langs from M1 spec: ita+eng
-        called_langs = run.call_args.kwargs.get("langs") or run.call_args.args[1]
-        assert called_langs == "ita+eng"
-
-    def test_lang_override_via_env(self, monkeypatch, png_file):
-        monkeypatch.setenv("KISO_OCR_TESSERACT_LANGS", "deu+fra")
-        with patch(
-            "kiso_ocr_mcp.ocr_runner._ocr_tesseract",
-            return_value="text",
-        ) as run:
-            ocr_image(file_path=str(png_file))
-        called_langs = run.call_args.kwargs.get("langs") or run.call_args.args[1]
-        assert called_langs == "deu+fra"
-
-    def test_describe_image_returns_structured_error(self, monkeypatch, png_file):
-        """Tesseract is OCR-only; describe requires Gemini backend."""
-        result = describe_image(file_path=str(png_file))
-        assert result["success"] is False
-        assert "describe_image requires backend=gemini" in result["stderr"]
-        assert result["description"] == ""
-
-    def test_response_includes_backend_field(self, monkeypatch, png_file):
-        with patch(
-            "kiso_ocr_mcp.ocr_runner._ocr_tesseract",
-            return_value="text",
-        ):
-            result = ocr_image(file_path=str(png_file))
-        assert result.get("backend") == "tesseract"
-
-    def test_subprocess_error_surfaces(self, monkeypatch, png_file):
-        with patch(
-            "kiso_ocr_mcp.ocr_runner._ocr_tesseract",
-            side_effect=RuntimeError("tesseract: cannot read image"),
-        ):
-            result = ocr_image(file_path=str(png_file))
-        assert result["success"] is False
-        assert "tesseract" in result["stderr"].lower()
-
-    def test_truncates_long_output(self, monkeypatch, png_file):
-        long_text = "x" * 100_000
-        with patch(
-            "kiso_ocr_mcp.ocr_runner._ocr_tesseract",
-            return_value=long_text,
-        ):
-            result = ocr_image(file_path=str(png_file))
-        assert result["truncated"] is True
-        assert len(result["text"]) <= 50_000
-
-
-class TestOcrTesseractRunner:
-    """Direct unit tests for the _ocr_tesseract subprocess wrapper."""
-
-    def test_invokes_tesseract_binary(self, png_file):
-        from kiso_ocr_mcp import ocr_runner
-
-        completed = MagicMock(returncode=0, stdout="extracted text\n", stderr="")
-        with patch(
-            "kiso_ocr_mcp.ocr_runner.subprocess.run",
-            return_value=completed,
-        ) as run:
-            text = ocr_runner._ocr_tesseract(png_file, langs="ita+eng")
-        assert text == "extracted text\n"
-        cmd = run.call_args.args[0]
-        assert cmd[0] == "tesseract"
-        assert str(png_file) in cmd
-        assert "stdout" in cmd
-        assert "-l" in cmd
-        assert "ita+eng" in cmd
-
-    def test_nonzero_exit_raises(self, png_file):
-        from kiso_ocr_mcp import ocr_runner
-
-        completed = MagicMock(returncode=1, stdout="", stderr="boom")
-        with patch(
-            "kiso_ocr_mcp.ocr_runner.subprocess.run",
-            return_value=completed,
-        ), pytest.raises(RuntimeError, match="tesseract"):
-            ocr_runner._ocr_tesseract(png_file, langs="ita+eng")
-
-    def test_binary_missing_raises(self, png_file):
-        from kiso_ocr_mcp import ocr_runner
-
-        with patch(
-            "kiso_ocr_mcp.ocr_runner.subprocess.run",
-            side_effect=FileNotFoundError("tesseract not in PATH"),
-        ), pytest.raises(RuntimeError, match="tesseract"):
-            ocr_runner._ocr_tesseract(png_file, langs="ita+eng")
+    def test_no_subprocess_used(self, monkeypatch):
+        """v0.3 removes Tesseract — doctor must not probe for any binary."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+        with patch("subprocess.run") as run:
+            check_health()
+        run.assert_not_called()

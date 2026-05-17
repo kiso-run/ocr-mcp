@@ -407,9 +407,9 @@ The fix is a pluggable backend — Tesseract local default, Gemini opt-in for qu
 
 ---
 
-## v0.3 — Cloud-only (2026-05-16)
+## v0.3 — Cloud-only (2026-05-16) ✅
 
-**Status**: planned.
+**Status**: shipped.
 
 **Why this version exists**
 
@@ -428,17 +428,17 @@ Local-OCR engines are explicitly out of scope. Air-gapped consumers should fork 
 
 **Tasks** (TDD: tests first, then strip, then green)
 
-- [ ] Update `tests/test_ocr_runner.py`: drop all Tesseract-backend assertions; add tests for `KISO_OCR_BACKEND=litellm` route (mocked HTTP to `LITELLM_BASE_URL`); ensure `describe_image` and `ocr_image` go through the same `_call_vision_llm` path
-- [ ] Update `tests/test_server.py`: drop Tesseract-related tool-arg validation; verify `doctor` no longer probes for the Tesseract binary
-- [ ] Run pytest — confirm red (Tesseract tests gone, new litellm-backend tests not yet implemented)
-- [ ] Refactor `src/kiso_ocr_mcp/ocr_runner.py`: extract `_call_vision_llm(base_url, api_key, model, image_bytes, prompt)`; both `ocr_image` and `describe_image` call it with different prompts; backend selector resolves `(base_url, api_key, model)` from env once at startup
-- [ ] Strip Tesseract code from `ocr_runner.py` (any subprocess wrapper, the `KISO_OCR_TESSERACT_LANGS` handling, the language-pack apt-install assumptions)
-- [ ] Refactor `src/kiso_ocr_mcp/server.py`: drop the Tesseract `doctor` branch; simplify backend setup
-- [ ] Update `pyproject.toml`: remove Tesseract-related deps if any (`pytesseract`, etc.); bump `version = "0.3.0"`; update `description` to "Minimal MCP wrapper around a cloud vision LLM (OpenRouter direct, or via a consumer's LiteLLM gateway)"
-- [ ] `uv lock` — refresh `uv.lock`
-- [ ] Run pytest — confirm green
-- [ ] Rewrite `README.md` end-to-end: drop Tesseract sections, drop apt-install, drop `KISO_OCR_TESSERACT_LANGS`; explain the `openrouter` vs `litellm` selector (mirror the kiso-search-mcp README style)
-- [ ] Append note to `Out of scope for v0.3`: explicit "no local OCR path — by design"
+- [x] Update `tests/test_ocr_runner.py`: drop all Tesseract-backend assertions; add tests for `KISO_OCR_BACKEND=litellm` route (mocked HTTP to `LITELLM_BASE_URL`); ensure `describe_image` and `ocr_image` go through the same `_call_vision_llm` path
+- [x] Update `tests/test_server.py`: drop Tesseract-related tool-arg validation; verify `doctor` no longer probes for the Tesseract binary
+- [x] Run pytest — confirm red (Tesseract tests gone, new litellm-backend tests not yet implemented)
+- [x] Refactor `src/kiso_ocr_mcp/ocr_runner.py`: extract `_call_vision_llm(base_url, api_key, model, image_bytes, prompt)`; both `ocr_image` and `describe_image` call it with different prompts; backend selector resolves `(base_url, api_key, model)` from env once at startup
+- [x] Strip Tesseract code from `ocr_runner.py` (any subprocess wrapper, the `KISO_OCR_TESSERACT_LANGS` handling, the language-pack apt-install assumptions)
+- [x] Refactor `src/kiso_ocr_mcp/server.py`: drop the Tesseract `doctor` branch; simplify backend setup
+- [x] Update `pyproject.toml`: remove Tesseract-related deps if any (`pytesseract`, etc.); bump `version = "0.3.0"`; update `description` to "Minimal MCP wrapper around a cloud vision LLM (OpenRouter direct, or via a consumer's LiteLLM gateway)"
+- [x] `uv lock` — refresh `uv.lock`
+- [x] Run pytest — confirm green
+- [x] Rewrite `README.md` end-to-end: drop Tesseract sections, drop apt-install, drop `KISO_OCR_TESSERACT_LANGS`; explain the `openrouter` vs `litellm` selector (mirror the kiso-search-mcp README style)
+- [x] Append note to `Out of scope for v0.3`: explicit "no local OCR path — by design"
 - [ ] Cut `v0.3.0` tag on GitHub *(user action)*
 
 **Exit gate**
